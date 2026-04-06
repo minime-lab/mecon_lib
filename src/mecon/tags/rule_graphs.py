@@ -31,7 +31,7 @@ class TagGraph:
         for tag, info in self._dependency_mapping.items():
             info_cpy = info.copy()
             row_dict = {'tag': tag}
-            depends_on = info_cpy['depends_on']
+            depends_on = [dep for dep in info_cpy['depends_on'] if pd.notna(dep) and str(dep).strip() != '']
             del info_cpy['depends_on']
             row_dict.update(info_cpy)
             if len(depends_on) == 0 and not ignore_tags_with_no_dependencies:
@@ -52,6 +52,16 @@ class TagGraph:
 
     @staticmethod
     def build_dependency_mapping(tags: Iterable[tagging.Tag]) -> dict:
+        def _normalise_dep_list(value) -> list[str]:
+            if isinstance(value, list):
+                raw = value
+            elif value is None or pd.isna(value):
+                return []
+            else:
+                raw = str(value).split(',')
+
+            return [str(dep).strip() for dep in raw if pd.notna(dep) and str(dep).strip() != '']
+
         rules = {tag.name: tag_helpers.expand_rule_to_subrules(tag.rule) for tag in tags}
         expanded_rules = []
         for tag_name, tag_rules in rules.items():
@@ -65,8 +75,7 @@ class TagGraph:
         df_cnd['is_tag_rule'] = df_cnd['rule'].apply(lambda rule: rule.field == 'tags')
 
         df_tags = df_cnd[df_cnd['is_tag_rule']].copy()
-        df_tags['depends_on'] = df_tags['rule'].apply(
-                lambda rule: rule.value if isinstance(rule.value, list) else rule.value.split(','))
+        df_tags['depends_on'] = df_tags['rule'].apply(lambda rule: _normalise_dep_list(rule.value))
 
         df_tags_agg = df_tags.groupby('tag').agg({'depends_on': lambda arr: list(chain(*arr))}).reset_index()
 
@@ -113,8 +122,9 @@ class TagGraph:
         cleaned_edges = [edge for edge in edges if edge not in edges_to_remove]
 
         new_df = pd.DataFrame(cleaned_edges, columns=['tag', 'depends_on']).groupby('tag').agg({'depends_on': list}).reset_index()
-        new_df['depends_on'] = new_df['depends_on'].apply(lambda arr: arr if arr is not None and len(arr) > 0 and arr[0] is not None else list())
-
+        new_df['depends_on'] = new_df['depends_on'].apply(
+            lambda arr: [dep for dep in arr if pd.notna(dep) and str(dep).strip() != '']
+        )
         # new_dep_mapping = {k: v['depends_on'] for k, v in new_df.set_index('tag').to_dict('index').items()}
         new_dep_mapping = new_df.set_index('tag').to_dict('index')
 
