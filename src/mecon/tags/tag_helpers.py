@@ -80,11 +80,11 @@ def tag_stats_from_transactions(transactions: Transactions) -> pd.DataFrame:
                                        operation_func = len,
                                        operation_func_name='count')
     df_money_in = aggregate_data_for_each_tagged_row(transactions,
-                                       operation_func = lambda _df: np.sum(n for n in _df['amount'] if n>0),
+                                       operation_func = lambda _df: np.sum([n for n in _df['amount'] if n>0]),
                                        operation_func_name='total_money_in')
     df_money_out = aggregate_data_for_each_tagged_row(transactions,
-                                                     operation_func=lambda _df: np.sum(
-                                                         -n for n in _df['amount'] if n < 0),
+                                                     operation_func=lambda _df: np.sum([
+                                                         -n for n in _df['amount'] if n < 0]),
                                                      operation_func_name='total_money_out')
 
     df_merged = df_count.merge(df_money_in.merge(df_money_out, on='name'), on='name')
