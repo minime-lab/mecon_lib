@@ -16,7 +16,7 @@ EXPECTED_OUTPUT_COLUMNS = {
 
 
 def source_key_to_abr(source_key):
-    if source_key in ["ob-monzo"]:
+    if source_key in ["ob-monzo", "monzo-api", "MonzoAPI"]:
         source_abr = "MZN"
     elif source_key in ["ob-hsbc"]:
         source_abr = "HSBC"
@@ -215,8 +215,113 @@ class TrueLayerStatementTransformer(StatementTransformer):
             )
 
 
+class MonzoAPIStatementTransformer(StatementTransformer):
+    source_name = "monzo-api"
+    source_name_abr = "MZN"
+
+    def _parse_and_convert_datetimes(self, datetime_str_series: pd.Series) -> pd.Series:
+        # Keep historical behavior: parse first 19 chars as UTC then convert to London local time.
+        parsed_datetime = pd.to_datetime(
+            datetime_str_series.astype(str).str.slice(0, 19) + "Z",
+            utc=True,
+            errors="coerce",
+        )
+        if parsed_datetime.isna().any():
+            raise ValueError("Input 'created' column contains invalid datetime values")
+        converted_datetime = parsed_datetime.dt.tz_convert("Europe/London")
+        return converted_datetime.dt.tz_localize(None)
+
+    @staticmethod
+    def _has_value(value) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, (list, dict, tuple, set)):
+            return True
+        try:
+            return bool(pd.notna(value))
+        except (TypeError, ValueError):
+            return True
+
+    @staticmethod
+    def _clean_record(record: dict) -> dict:
+        return {
+            key: value
+            for key, value in record.items()
+            if MonzoAPIStatementTransformer._has_value(value)
+        }
+
+    def _transform(self, df_monzo: pd.DataFrame) -> pd.DataFrame:
+        logging.info(f"Transforming Monzo API raw transactions ({df_monzo.shape} shape)")
+        df_monzo = df_monzo.copy()
+
+        df_transformed = pd.DataFrame({"id": df_monzo["id"]})
+        df_transformed["datetime"] = self._parse_and_convert_datetimes(df_monzo["created"])
+        df_transformed["currency"] = df_monzo["local_currency"]
+        df_transformed["amount"] = pd.to_numeric(df_monzo["amount"], errors="coerce") / 100
+        df_transformed["amount_cur"] = (
+            pd.to_numeric(df_monzo["local_amount"], errors="coerce") / 100
+        )
+
+        cols_to_exclude = {
+            "id",
+            "datetime",
+            "amount",
+            "currency",
+            "amount_cur",
+            "local_currency",
+            "created",
+            "local_amount",
+        }
+        other_desc_cols = [col for col in df_monzo.columns if col not in cols_to_exclude]
+        if other_desc_cols:
+            other_records = (
+                df_monzo[other_desc_cols]
+                .to_dict(orient="records")
+            )
+        else:
+            other_records = [{} for _ in range(len(df_monzo))]
+
+        df_transformed["description"] = [
+            f"bank:{self.source_name}, other_fields: {self._clean_record(record)}"
+            for record in other_records
+        ]
+
+        df_transformed["id"] = df_transformed.apply(
+            lambda row: transaction_id_formula(row, self.source_name), axis=1
+        )
+
+        # Keep explicit HH:MM:SS so CSV serialization does not collapse midnight values to date-only.
+        df_transformed["datetime"] = _strip_timezone(
+            df_transformed["datetime"]
+        ).dt.strftime("%Y-%m-%d %H:%M:%S")
+        return df_transformed
+
+    def transform_json(self, json_input: dict | list) -> pd.DataFrame:
+        records = json_input.get("transactions", []) if isinstance(json_input, dict) else json_input
+        flat_records = [flatten_json_max_2d(record) for record in records]
+        df_flat = pd.DataFrame.from_records(flat_records)
+        df_normalized = normalise_df_column_names(df_flat)
+        return self.transform(df_normalized)
+
+    def validate_input_df(self, df: pd.DataFrame):
+        expected_input_columns = {
+            "id",
+            "created",
+            "amount",
+            "local_amount",
+            "local_currency",
+        }
+        current_columns = df.columns
+        if not expected_input_columns.issubset(current_columns):
+            raise ValueError(
+                f"Invalid set of expected output columns {current_columns}:\n Missing -> {expected_input_columns.difference(current_columns)}"
+            )
+
+
 def statement_transformers_factory(source):
     if source in ["ob-hsbc", "ob-revolut", "ob-monzo"]:
         return TrueLayerStatementTransformer(source)
+    elif source in ["monzo-api", "MonzoAPI"]:
+        return MonzoAPIStatementTransformer()
     else:
         raise ValueError(f"Invalid or unknown transaction source name '{source}'")
