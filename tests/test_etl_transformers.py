@@ -3,7 +3,9 @@ import unittest
 import pandas as pd
 
 from mecon.etl.transformers import (
+    InvestEngineStatementTransformer,
     MonzoAPIStatementTransformer,
+    Trading212StatementTransformer,
     TrueLayerStatementTransformer,
     statement_transformers_factory,
 )
@@ -173,6 +175,92 @@ class MonzoAPIStatementTransformerTestCase(unittest.TestCase):
         self.assertIn("PRET A MANGER", df_out.loc[1, "description"])
 
 
+class Trading212StatementTransformerTestCase(unittest.TestCase):
+    def test_transform_trading212_dataframe(self):
+        df_in = pd.DataFrame(
+            [
+                {
+                    "id": "trd_buy_1",
+                    "time": "2024-03-10 14:15:16.000",
+                    "action": "Market buy",
+                    "total": 123.45,
+                    "currency_(total)": "GBP",
+                    "currency_(result)": "GBP",
+                    "ticker": "VUSA",
+                },
+                {
+                    "id": "trd_sell_1",
+                    "time": "2024-03-11 09:00:00.000",
+                    "action": "Market sell",
+                    "total": 50.0,
+                    "currency_(total)": "GBP",
+                    "currency_(result)": None,
+                    "ticker": "VUAG",
+                },
+            ]
+        )
+
+        transformer = Trading212StatementTransformer(specific_source="Trading212 ISA")
+        df_out = transformer.transform(df_in)
+
+        self.assertListEqual(
+            list(df_out.columns),
+            ["id", "datetime", "amount", "currency", "amount_cur", "description"],
+        )
+        self.assertEqual(len(df_out), 1)
+        self.assertEqual(df_out.loc[0, "datetime"], "2024-03-10 14:15:16")
+        self.assertEqual(df_out.loc[0, "amount"], -123.45)
+        self.assertEqual(df_out.loc[0, "amount_cur"], -123.45)
+        self.assertEqual(df_out.loc[0, "currency"], "GBP")
+        self.assertTrue(df_out.loc[0, "id"].startswith("TRD212-"))
+        self.assertIn("bank:Trading212 ISA", df_out.loc[0, "description"])
+        self.assertIn("ticker", df_out.loc[0, "description"])
+
+    def test_validate_input_df_missing_required_columns(self):
+        transformer = Trading212StatementTransformer()
+
+        with self.assertRaises(ValueError):
+            transformer.transform(pd.DataFrame([{"id": "trd_1"}]))
+
+
+class InvestEngineStatementTransformerTestCase(unittest.TestCase):
+    def test_transform_investengine_dataframe(self):
+        df_in = pd.DataFrame(
+            [
+                {
+                    "datetime": "15/04/2024 13:45:30",
+                    "amount": "150.25",
+                    "currency": "GBP",
+                    "description": "Dividend payment",
+                }
+            ]
+        )
+
+        transformer = InvestEngineStatementTransformer()
+        df_out = transformer.transform(df_in)
+
+        self.assertListEqual(
+            list(df_out.columns),
+            ["id", "datetime", "amount", "currency", "amount_cur", "description"],
+        )
+        self.assertEqual(len(df_out), 1)
+        self.assertEqual(df_out.loc[0, "datetime"], "2024-04-15 13:45:30")
+        self.assertEqual(df_out.loc[0, "amount"], 150.25)
+        self.assertEqual(df_out.loc[0, "amount_cur"], 150.25)
+        self.assertEqual(df_out.loc[0, "currency"], "GBP")
+        self.assertTrue(df_out.loc[0, "id"].startswith("INVENG-"))
+        self.assertEqual(
+            df_out.loc[0, "description"],
+            "bank:INVENG, Dividend payment",
+        )
+
+    def test_validate_input_df_missing_required_columns(self):
+        transformer = InvestEngineStatementTransformer()
+
+        with self.assertRaises(ValueError):
+            transformer.transform(pd.DataFrame([{"amount": 1}]))
+
+
 class StatementTransformerFactoryTestCase(unittest.TestCase):
     def test_factory_for_monzo_api(self):
         self.assertIsInstance(
@@ -184,6 +272,18 @@ class StatementTransformerFactoryTestCase(unittest.TestCase):
         self.assertIsInstance(
             statement_transformers_factory("ob-monzo"),
             TrueLayerStatementTransformer,
+        )
+
+    def test_factory_for_trading212(self):
+        self.assertIsInstance(
+            statement_transformers_factory("trading212"),
+            Trading212StatementTransformer,
+        )
+
+    def test_factory_for_investengine(self):
+        self.assertIsInstance(
+            statement_transformers_factory("investengine"),
+            InvestEngineStatementTransformer,
         )
 
 

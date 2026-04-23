@@ -18,6 +18,10 @@ EXPECTED_OUTPUT_COLUMNS = {
 def source_key_to_abr(source_key):
     if source_key in ["ob-monzo", "monzo-api", "MonzoAPI"]:
         source_abr = "MZN"
+    elif source_key in ["trading212", "Trading212", "TRD212"]:
+        source_abr = "TRD212"
+    elif source_key in ["invest-engine", "investengine", "InvestEngine", "INVENG"]:
+        source_abr = "INVENG"
     elif source_key in ["ob-hsbc"]:
         source_abr = "HSBC"
     elif source_key in ["ob-revolut"]:
@@ -318,10 +322,127 @@ class MonzoAPIStatementTransformer(StatementTransformer):
             )
 
 
+class Trading212StatementTransformer(StatementTransformer):
+    source_name = "TRD212"
+    source_name_abr = "TRD212"
+
+    def __init__(self, specific_source=None):
+        self._specific_source = (
+            specific_source if specific_source is not None else self.source_name
+        )
+
+    def _transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        logging.info(f"Transforming Trading212 raw transactions ({df.shape} shape)")
+        df = df.copy()
+
+        if "currency_(result)" in df.columns:
+            df = df[~df["currency_(result)"].isna()].copy()
+
+        df_transformed = pd.DataFrame()
+        df_transformed["datetime"] = pd.to_datetime(
+            df["time"].astype(str).str.slice(0, 19),
+            format="%Y-%m-%d %H:%M:%S",
+            errors="coerce",
+        )
+
+        sign = df["action"].apply(lambda action: -1 if action == "Market buy" else 1)
+        total = pd.to_numeric(df["total"], errors="coerce")
+        df_transformed["amount"] = total * sign
+        df_transformed["amount_cur"] = total * sign
+        df_transformed["currency"] = df["currency_(total)"]
+
+        cols_to_exclude = set(df_transformed.columns).union({"time", "total", "id"})
+        other_desc_cols = [col for col in df.columns if col not in cols_to_exclude]
+        df["other_description"] = df[other_desc_cols].to_dict(orient="records")
+        df_transformed["description"] = df["other_description"].apply(
+            lambda other_description: (
+                f"bank:{self._specific_source}, other_fields:{other_description}"
+            )
+        )
+
+        df_transformed["id"] = df["id"]
+        df_transformed["id"] = df_transformed.apply(
+            lambda row: transaction_id_formula(row, self.source_name, txid=row["id"]),
+            axis=1,
+        )
+
+        df_final = df_transformed[
+            ["id", "datetime", "amount", "currency", "amount_cur", "description"]
+        ].copy()
+        df_final["datetime"] = _strip_timezone(df_final["datetime"]).dt.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        return df_final
+
+    def validate_input_df(self, df: pd.DataFrame):
+        expected_input_columns = {
+            "id",
+            "time",
+            "action",
+            "total",
+            "currency_(total)",
+        }
+        current_columns = df.columns
+        if not expected_input_columns.issubset(current_columns):
+            raise ValueError(
+                f"Invalid set of expected output columns {current_columns}:\n Missing -> {expected_input_columns.difference(current_columns)}"
+            )
+
+
+class InvestEngineStatementTransformer(StatementTransformer):
+    source_name = "INVENG"
+    source_name_abr = "INVENG"
+
+    def _transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        logging.info(f"Transforming InvestEngine raw transactions ({df.shape} shape)")
+        df = df.copy()
+
+        df["id"] = list(range(len(df)))
+        df["datetime"] = pd.to_datetime(
+            df["datetime"],
+            format="%d/%m/%Y %H:%M:%S",
+            errors="coerce",
+        )
+        df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+        df["amount_cur"] = df["amount"]
+        df["description"] = df["description"].astype(str).apply(
+            lambda value: f"bank:{self.source_name}, {value}"
+        )
+
+        df["id"] = df.apply(
+            lambda row: transaction_id_formula(row, self.source_name), axis=1
+        )
+
+        df_final = df[
+            ["id", "datetime", "amount", "currency", "amount_cur", "description"]
+        ].copy()
+        df_final["datetime"] = _strip_timezone(df_final["datetime"]).dt.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        return df_final
+
+    def validate_input_df(self, df: pd.DataFrame):
+        expected_input_columns = {
+            "datetime",
+            "amount",
+            "currency",
+            "description",
+        }
+        current_columns = df.columns
+        if not expected_input_columns.issubset(current_columns):
+            raise ValueError(
+                f"Invalid set of expected output columns {current_columns}:\n Missing -> {expected_input_columns.difference(current_columns)}"
+            )
+
+
 def statement_transformers_factory(source):
     if source in ["ob-hsbc", "ob-revolut", "ob-monzo"]:
         return TrueLayerStatementTransformer(source)
     elif source in ["monzo-api", "MonzoAPI"]:
         return MonzoAPIStatementTransformer()
+    elif source in ["trading212", "Trading212", "TRD212"]:
+        return Trading212StatementTransformer()
+    elif source in ["investengine", "InvestEngine", "INVENG"]:
+        return InvestEngineStatementTransformer()
     else:
         raise ValueError(f"Invalid or unknown transaction source name '{source}'")
