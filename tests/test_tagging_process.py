@@ -410,6 +410,36 @@ class OptimisedRuleExecutionPlanTaggingTestCase(unittest.TestCase):
         new_transactions = optimised_rep.tag(transactions)
         self.assertTrue(transactions.equals(new_transactions))
 
+    def test_tag_with_datetime_date_string_value_condition(self):
+        transactions = Transactions(pd.DataFrame([
+            {
+                'id': 'id_1',
+                'datetime': Timestamp('2023-01-01 00:00:00'),
+                'amount': 1.0,
+                'currency': 'GBP',
+                'amount_cur': 1.0,
+                'description': 'a',
+                'tags': '',
+            },
+            {
+                'id': 'id_2',
+                'datetime': Timestamp('2023-01-02 00:00:00'),
+                'amount': 1.0,
+                'currency': 'GBP',
+                'amount_cur': 1.0,
+                'description': 'b',
+                'tags': '',
+            },
+        ]))
+
+        date_tag = Tag.from_json('After cutoff', [{'datetime.date': {'greater': '2023-01-01'}}])
+        rep = OptREPTagging([date_tag])
+        rep.create_rule_execution_plan()
+        rep.create_optimised_rule_execution_plan()
+
+        tagged = rep.tag(transactions)
+        self.assertListEqual(tagged.tags.to_list(), ['', 'After cutoff'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -79,6 +79,29 @@ class ConditionTestCase(unittest.TestCase):
         )
         str(condition)  # make sure it doesn't crash
 
+    def test_from_string_values_date_transformation_coerces_compare_value(self):
+        condition = tagging.Condition.from_string_values(
+            field='datetime',
+            transformation_op_key='date',
+            compare_op_key='greater',
+            value='2023-01-01',
+        )
+
+        self.assertFalse(condition.compute({'datetime': datetime(2023, 1, 1, 0, 0, 0)}))
+        self.assertTrue(condition.compute({'datetime': datetime(2023, 1, 2, 0, 0, 0)}))
+        self.assertTrue(condition.compute({'datetime': '2023-01-02 00:00:00'}))
+
+    def test_from_string_values_time_transformation_coerces_compare_value(self):
+        condition = tagging.Condition.from_string_values(
+            field='datetime',
+            transformation_op_key='time',
+            compare_op_key='less',
+            value='12:00:00',
+        )
+
+        self.assertTrue(condition.compute({'datetime': datetime(2023, 1, 1, 11, 59, 59)}))
+        self.assertFalse(condition.compute({'datetime': datetime(2023, 1, 1, 12, 0, 0)}))
+
 
 class ConjunctionTestCase(unittest.TestCase):
     def test_init_validation_success(self):

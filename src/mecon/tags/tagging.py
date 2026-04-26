@@ -1,6 +1,6 @@
 import abc
 import json
-from datetime import datetime
+from datetime import datetime, time
 from typing import List, Iterable
 
 import numpy as np
@@ -148,12 +148,47 @@ class Condition(AbstractRule):
     def to_json(self) -> list | dict:
         return self.to_dict()
 
+    @staticmethod
+    def _coerce_comparison_value(value, transformation_op):
+        if not hasattr(transformation_op, 'name'):
+            return value
+
+        def _apply_to_scalar_or_list(raw, fn):
+            if isinstance(raw, list):
+                return [fn(v) for v in raw]
+            return fn(raw)
+
+        trans_name = transformation_op.name
+
+        if trans_name == 'date':
+            return _apply_to_scalar_or_list(value, calendar_utils.to_date)
+
+        if trans_name in {'day', 'month', 'year', 'hour', 'minute'}:
+            return _apply_to_scalar_or_list(value, lambda v: int(v) if isinstance(v, str) else v)
+
+        if trans_name == 'time':
+            def _to_time(v):
+                if isinstance(v, time):
+                    return v
+                if isinstance(v, datetime):
+                    return v.time()
+                if isinstance(v, str):
+                    if len(v) == 8:
+                        return datetime.strptime(v, calendar_utils.TIME_STRING_FORMAT).time()
+                    return calendar_utils.to_datetime(v).time()
+                return v
+
+            return _apply_to_scalar_or_list(value, _to_time)
+
+        return value
+
     @classmethod
     def from_string_values(cls, field, transformation_op_key, compare_op_key, value, observers_f=None):
         transformation_op = transformations.TransformationFunction.from_key(
             transformation_op_key if transformation_op_key else 'none')
         compare_op = comparisons.CompareOperator.from_key(compare_op_key)
 
+        value = cls._coerce_comparison_value(value, transformation_op)
         condition = cls(field, transformation_op, compare_op, value)
         condition.add_observers(observers_f)
 
