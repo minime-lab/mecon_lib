@@ -597,6 +597,14 @@ class Trading212InvestStatementTransformer(Trading212StatementTransformer):
         # Value held shares at "today" so plots reflect current value instead of
         # the stale last-transaction date. Format matches the raw export's UTC time.
         filling['time'] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S') + '+00:00'
+        # The raw export has no Total for synthetic rows; value still-held
+        # shares at the last traded price so the fake sell carries a real
+        # total/currency (matching the buy/sell rows the transform reads).
+        filling['total'] = (
+            filling['shares_diff'].astype(float).abs()
+            * filling['price_/_share'].astype(float)
+        )
+        filling['currency_(total)'] = filling['currency_(price_/_share)']
 
         filled_df = pd.concat([df, filling[filling['shares_diff'].abs()>0]], ignore_index=True).sort_values('time', ascending=False)
         return filled_df
@@ -635,13 +643,12 @@ class Trading212InvestStatementTransformer(Trading212StatementTransformer):
             )
         )
 
-        # Preserve the provider's own transaction id: globally unique and stable,
-        # which keeps drop_duplicates(id) and any re-fetch of the same year
-        # idempotent.
+        # Use the provider's own transaction id verbatim (globally unique, stable
+        # across re-fetches). Fake rows have no id, so fall back to a stable
+        # synthetic one derived from ticker + time.
         df_transformed["id"] = df["id"]
-        df_transformed["id"] = df_transformed.apply(
-            lambda row: transaction_id_formula(row, self.source_name, txid=row["id"]),
-            axis=1,
+        df_transformed.loc[df_transformed["id"].isna(), "id"] = (
+            "FAKE-" + df["ticker"].astype(str) + "-" + df["time"].astype(str)
         )
 
         df_final = df_transformed[

@@ -472,26 +472,25 @@ class Trading212InvestStatementTransformerJsonTestCase(unittest.TestCase):
         )
 
     def _amount_by_orig_id(self, df, orig_id):
-        """Amount of the transformed row for an original transaction ID.
+        """Amount of the transformed row whose id equals the raw export ID.
 
         Excludes the synthetic -FEE companion row (which also embeds the
         original ID) so the lookup is unambiguous.
         """
-        sub = f"i{orig_id}"
         rows = df[
-            df["id"].str.contains(sub, regex=False) & ~df["id"].str.endswith("-FEE")
+            df["id"].str.fullmatch(re.escape(orig_id)) & ~df["id"].str.endswith("-FEE")
         ]
         self.assertEqual(
             len(rows),
             1,
-            f"expected exactly one row containing {sub!r}, got {len(rows)}",
+            f"expected exactly one row with id {orig_id!r}, got {len(rows)}",
         )
         return float(rows["amount"].iloc[0])
 
     def _fee_amount_by_orig_id(self, df, orig_id):
         """Amount of the synthetic -FEE row for an original transaction ID."""
-        suffix = f"i{orig_id}-FEE"
-        rows = df[df["id"].str.endswith(suffix)]
+        suffix = f"{orig_id}-FEE"
+        rows = df[df["id"].str.fullmatch(re.escape(suffix))]
         self.assertEqual(
             len(rows), 1, f"expected exactly one fee row ending with {suffix!r}"
         )
@@ -500,8 +499,9 @@ class Trading212InvestStatementTransformerJsonTestCase(unittest.TestCase):
     def test_transform_json_covers_all_row_types(self):
         df = self.t.transform_json(TRADING212_INVEST_SAMPLE)
 
-        # 6 real rows + 2 synthetic conversion-fee rows = 8 transformed rows.
-        self.assertEqual(len(df), 8)
+        # 6 real rows + 2 synthetic conversion-fee rows + 2 Fake Market Sell
+        # rows (ACME 3 bought - 7 sold = 4 held; XYZL 12 bought, never sold).
+        self.assertEqual(len(df), 10)
         self.assertListEqual(
             list(df.columns),
             ["id", "datetime", "amount", "currency", "amount_cur", "description"],
@@ -520,7 +520,9 @@ class Trading212InvestStatementTransformerJsonTestCase(unittest.TestCase):
         )
 
         # Market sell: positive, magnitude = Total.
-        self.assertAlmostEqual(self._amount_by_orig_id(df, "EOF00000000002"), 289.59, 2)
+        self.assertAlmostEqual(
+            self._amount_by_orig_id(df, "EOF00000000002"), 289.59, 2
+        )
 
         # Withdrawal: raw NEGATIVE Total -> negative amount (sign trusted).
         self.assertAlmostEqual(
@@ -540,6 +542,13 @@ class Trading212InvestStatementTransformerJsonTestCase(unittest.TestCase):
             0.03,
             2,
         )
+
+        # Fake Market Sell rows: held shares valued at last price per share.
+        fake = df[df["id"].str.startswith("FAKE-")]
+        self.assertEqual(len(fake), 2)
+        acme = fake[fake["id"].str.contains("ACME")].iloc[0]
+        # 4 held @ 41.37 = 165.48 (positive: it's a synthetic sell).
+        self.assertAlmostEqual(float(acme["amount"]), 165.48, 2)
 
     def test_conversion_fee_rows_are_negative_companions(self):
         df = self.t.transform_json(TRADING212_INVEST_SAMPLE)
