@@ -1,4 +1,6 @@
+import re
 import unittest
+from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -9,6 +11,8 @@ from mecon.etl.transformers import (
     Trading212InvestStatementTransformer,
     Trading212CashIsaStatementTransformer,
     TrueLayerStatementTransformer,
+    flatten_data,
+    normalise_df_column_names,
     statement_transformers_factory,
 )
 
@@ -551,6 +555,136 @@ class Trading212InvestStatementTransformerJsonTestCase(unittest.TestCase):
         self.assertAlmostEqual(
             self._fee_amount_by_orig_id(df, "EOF00000000002"), -2.14, 2
         )
+
+
+# Fully synthetic raw export rows used to exercise fake_fill_invested_amounts.
+# NOT derived from a real account: every date, amount, share count, price,
+# exchange rate, ISIN, ticker and transaction ID below is made up.
+FAKE_FILL_SAMPLE = [
+    # Bought 10 of A @ $10, sold 5 of A @ $15 -> 5 still held, valued @ last = $15.
+    {
+        "Time (UTC)": "2025-01-01 08:00:00+00:00",
+        "Action": "Market buy",
+        "Ticker": "A",
+        "Name": "Acme Corp",
+        "No. of shares": "10.0000000000",
+        "Price / share": "10.0000000000",
+        "Currency (Price / share)": "USD",
+        "Total": "100.00",
+        "Currency (Total)": "USD",
+        "ID": "EOF00000000001",
+    },
+    {
+        "Time (UTC)": "2025-02-01 08:00:00+00:00",
+        "Action": "Market sell",
+        "Ticker": "A",
+        "Name": "Acme Corp",
+        "No. of shares": "5.0000000000",
+        "Price / share": "15.0000000000",
+        "Currency (Price / share)": "USD",
+        "Total": "75.00",
+        "Currency (Total)": "USD",
+        "ID": "EOF00000000002",
+    },
+    # Bought 20 of B @ $5, never sold -> 20 still held, valued @ last = $5.
+    {
+        "Time (UTC)": "2025-03-01 08:00:00+00:00",
+        "Action": "Market buy",
+        "Ticker": "B",
+        "Name": "Beta Fund",
+        "No. of shares": "20.0000000000",
+        "Price / share": "5.0000000000",
+        "Currency (Price / share)": "GBP",
+        "Total": "100.00",
+        "Currency (Total)": "GBP",
+        "ID": "EOF00000000003",
+    },
+    # A fully closed position: bought 4, sold 4 -> no fake row expected.
+    {
+        "Time (UTC)": "2025-04-01 08:00:00+00:00",
+        "Action": "Market buy",
+        "Ticker": "C",
+        "Name": "Gamma Co",
+        "No. of shares": "4.0000000000",
+        "Price / share": "1.0000000000",
+        "Currency (Price / share)": "GBP",
+        "Total": "4.00",
+        "Currency (Total)": "GBP",
+        "ID": "EOF00000000004",
+    },
+    {
+        "Time (UTC)": "2025-05-01 08:00:00+00:00",
+        "Action": "Market sell",
+        "Ticker": "C",
+        "Name": "Gamma Co",
+        "No. of shares": "4.0000000000",
+        "Price / share": "2.0000000000",
+        "Currency (Price / share)": "GBP",
+        "Total": "8.00",
+        "Currency (Total)": "GBP",
+        "ID": "EOF00000000005",
+    },
+]
+
+
+class Trading212InvestFakeFillTestCase(unittest.TestCase):
+    def setUp(self):
+        self.t = Trading212InvestStatementTransformer(
+            specific_source="Trading212 Invest"
+        )
+
+    def _fake_filled(self):
+        # Mimic transform_json's preprocessing: rename Time (UTC) -> Time,
+        # column normalisation, then call the function under test directly.
+        records = self.t._preprocess_records(FAKE_FILL_SAMPLE)
+        df = pd.DataFrame.from_records([flatten_data(r) for r in records])
+        df = normalise_df_column_names(df)
+        return self.t.fake_fill_invested_amounts(df.copy())
+
+    def test_adds_one_fake_row_per_open_position(self):
+        out = self._fake_filled()
+        fake = out[out["action"] == "Fake Market Sell"]
+        # Open positions: A (5 held) and B (20 held). C is fully closed.
+        self.assertEqual(len(fake), 2)
+        self.assertSetEqual(set(fake["ticker"]), {"A", "B"})
+
+    def test_no_fake_row_for_closed_position(self):
+        out = self._fake_filled()
+        self.assertNotIn("C", set(out[out["action"] == "Fake Market Sell"]["ticker"]))
+
+    def test_held_shares_match_remaining_after_buys_minus_sells(self):
+        out = self._fake_filled()
+        fake = out[out["action"] == "Fake Market Sell"].set_index("ticker")
+        # A: 10 bought - 5 sold = 5 held.
+        self.assertAlmostEqual(float(fake.loc["A", "shares_diff"]), -5.0, 6)
+        # B: 20 bought - 0 sold = 20 held.
+        self.assertAlmostEqual(float(fake.loc["B", "shares_diff"]), -20.0, 6)
+
+    def test_fake_row_uses_last_price_per_share(self):
+        out = self._fake_filled()
+        fake = out[out["action"] == "Fake Market Sell"].set_index("ticker")
+        # A's last trade is the $15 sell, so held shares are valued at 15.
+        self.assertEqual(fake.loc["A", "price_/_share"], "15.0000000000")
+        self.assertEqual(fake.loc["B", "price_/_share"], "5.0000000000")
+
+    def test_fake_row_time_is_now_in_export_format(self):
+        import re
+
+        out = self._fake_filled()
+        fake = out[out["action"] == "Fake Market Sell"]
+        # Format must match the raw export: YYYY-MM-DD HH:MM:SS+00:00.
+        self.assertTrue(
+            fake["time"].str.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\+00:00").all()
+        )
+        # It must be today (UTC) and not equal to the last real transaction date.
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self.assertTrue(fake["time"].str.startswith(today).all())
+        self.assertNotIn("2025-02-01", list(fake["time"]))
+
+    def test_fake_row_has_negative_action_sign(self):
+        out = self._fake_filled()
+        fake = out[out["action"] == "Fake Market Sell"]
+        self.assertEqual(list(fake["action_sign"]), [-1, -1])
 
 
 if __name__ == "__main__":

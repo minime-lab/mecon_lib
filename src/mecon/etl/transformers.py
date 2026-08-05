@@ -1,5 +1,6 @@
 import abc
 import logging
+from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -579,19 +580,23 @@ class Trading212InvestStatementTransformer(Trading212StatementTransformer):
     def fake_fill_invested_amounts(self, df: pd.DataFrame) -> pd.DataFrame:
         df.sort_values(by=["time"], inplace=True, ascending=False)
 
-        # df = df[df['ticker']=='VUAG']
         df_clean = df[df['no._of_shares'].notna() & (df['ticker'].str.len()>0)]
         df_clean['action_sign'] = df_clean['action'].apply(lambda action: 1 if action.lower() == 'market buy' else -1 if action.lower() == 'market sell' else 0)
         df_clean['shares_diff'] = df_clean['no._of_shares'].astype(float)*df_clean['action_sign']
+        # NOTE: df_clean is sorted newest-first, so groupby 'last' would return
+        # the *earliest* row. 'first' gives the most recent trade per ticker,
+        # which is the price we want to value still-held shares at.
         filling = df_clean.groupby('ticker').agg({
             'shares_diff': lambda arr: -sum(v for v in arr if isinstance(v, float)),
-            'price_/_share': 'last',
-            'currency_(price_/_share)': 'last',
-            'name': 'last',
-            'time': 'last'
+            'price_/_share': 'first',
+            'currency_(price_/_share)': 'first',
+            'name': 'first',
         }).reset_index()
         filling['action'] = 'Fake Market Sell'
-        # filling['time'] = now
+        filling['action_sign'] = -1
+        # Value held shares at "today" so plots reflect current value instead of
+        # the stale last-transaction date. Format matches the raw export's UTC time.
+        filling['time'] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S') + '+00:00'
 
         filled_df = pd.concat([df, filling[filling['shares_diff'].abs()>0]], ignore_index=True).sort_values('time', ascending=False)
         return filled_df
