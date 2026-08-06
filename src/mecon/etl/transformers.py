@@ -577,7 +577,11 @@ class Trading212InvestStatementTransformer(Trading212StatementTransformer):
                 processed.append(fee_row)
         return processed
 
-    def fake_fill_invested_amounts(self, df: pd.DataFrame) -> pd.DataFrame:
+    def fake_fill_invested_amounts(
+            self,
+            df: pd.DataFrame,
+            share_diff_threshold: float = .01,
+    ) -> pd.DataFrame:
         df.sort_values(by=["time"], inplace=True, ascending=False)
 
         df_clean = df[df['no._of_shares'].notna() & (df['ticker'].str.len()>0)]
@@ -606,7 +610,7 @@ class Trading212InvestStatementTransformer(Trading212StatementTransformer):
         )
         filling['currency_(total)'] = filling['currency_(price_/_share)']
 
-        filled_df = pd.concat([df, filling[filling['shares_diff'].abs()>0]], ignore_index=True).sort_values('time', ascending=False)
+        filled_df = pd.concat([df, filling[filling['shares_diff'].abs()>share_diff_threshold]], ignore_index=True).sort_values('time', ascending=False)
         return filled_df
 
     def _transform(self, df: pd.DataFrame) -> pd.DataFrame:
