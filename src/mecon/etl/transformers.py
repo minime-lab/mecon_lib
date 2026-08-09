@@ -32,6 +32,7 @@ def source_key_to_abr(source_key):
         "trading212-cash-isa",
         "Trading212CashIsa",
         "TRD212CISA",
+        "trading212-cash",
     ]:
         source_abr = "TRD212"
     elif source_key in ["invest-engine", "investengine", "InvestEngine", "INVENG"]:
@@ -676,18 +677,112 @@ class Trading212InvestStatementTransformer(Trading212StatementTransformer):
         return self.transform(df_normalized)
 
 
-class Trading212CashIsaStatementTransformer(Trading212InvestStatementTransformer):
-    """Trading212 cash ISA transformer.
+class Trading212CashIsaStatementTransformer(Trading212StatementTransformer):
+    """Trading212 cash ISA transformer (JSON entry point).
 
-    Separate class from the stocks & shares ISA because the cash ISA export has
-    its own column set and semantics. The raw object key is
-    ``transactions/raw/trading212/trading212-cash-isa`` (a single path segment),
-    so the ETL derives ``source_key = "trading212-cash-isa"`` and routes here.
+    Deliberately subclasses the *base* Trading212 transformer, not the invest
+    one: the cash ISA holds no positions, so the invest transformer's
+    ``fake_fill_invested_amounts`` (which requires ``no._of_shares`` and
+    ``ticker``) is meaningless here and raises ``KeyError`` on real cash data.
 
-    Reuses the invest transformer's preprocessing (``Time (UTC)`` -> ``Time``
-    rename and conversion-fee row split) and sign rule; override the action
-    sets or column names below once a real cash-ISA sample row is available.
+    The cash export has a single flat shape with only six columns::
+
+        Action, Time (UTC), Notes, ID, Total, Currency (Total)
+
+    Observed actions are ``Deposit``, ``Withdrawal`` and ``Interest on cash``.
+    All of them arrive with an already-signed ``Total`` (withdrawals negative,
+    deposits and interest positive), so the sign is trusted verbatim — there
+    are no trade rows whose direction must be derived from the action.
+
+    Unknown actions are also trusted as-is and logged, so a new cash action
+    type can never silently flip a sign or break a run.
     """
+
+    source_name = "TRD212"
+    source_name_abr = "TRD212"
+
+    COL_TIME_UTC = "Time (UTC)"
+    COL_TIME = "Time"
+
+    # Actions seen in real cash ISA exports; anything else is logged once.
+    KNOWN_ACTIONS = frozenset({"deposit", "withdrawal", "interest on cash"})
+
+    def __init__(self, specific_source=None):
+        super().__init__(specific_source=specific_source or "TRD212CISA")
+
+    @classmethod
+    def _preprocess_records(cls, records: list[dict]) -> list[dict]:
+        """Rename ``Time (UTC)`` -> ``Time`` so the transform reads ``time``.
+
+        No fee splitting: the cash ISA export has no currency conversion fee
+        column.
+        """
+        processed: list[dict] = []
+        for record in records:
+            row = dict(record)
+            if cls.COL_TIME_UTC in row:
+                row[cls.COL_TIME] = row.pop(cls.COL_TIME_UTC)
+            processed.append(row)
+        return processed
+
+    def _transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        logging.info(f"Transforming Trading212 cash ISA transactions ({df.shape} shape)")
+        df = df.copy()
+
+        normalised_action = df["action"].astype(str).str.strip().str.lower()
+        unknown = sorted(set(normalised_action) - self.KNOWN_ACTIONS)
+        if unknown:
+            logging.warning(
+                "Unknown Trading212 cash ISA action(s) %s; trusting the signed Total as-is",
+                unknown,
+            )
+
+        df_transformed = pd.DataFrame()
+        df_transformed["datetime"] = pd.to_datetime(
+            df["time"].astype(str).str.slice(0, 19),
+            format="%Y-%m-%d %H:%M:%S",
+            errors="coerce",
+        )
+
+        # Every cash ISA row carries an already-signed Total. Trust it.
+        amount = pd.to_numeric(df["total"], errors="coerce")
+        df_transformed["amount"] = amount
+        df_transformed["amount_cur"] = amount
+        df_transformed["currency"] = df["currency_(total)"]
+
+        cols_to_exclude = set(df_transformed.columns).union({"time", "total", "id"})
+        other_desc_cols = [col for col in df.columns if col not in cols_to_exclude]
+        df["other_description"] = df[other_desc_cols].to_dict(orient="records")
+        df_transformed["description"] = df["other_description"].apply(
+            lambda other_description: (
+                f"bank:{self._specific_source}, other_fields:{other_description}"
+            )
+        )
+
+        # The provider's own transaction id is a globally unique UUID that is
+        # stable across re-exports; use it verbatim like the invest branch.
+        df_transformed["id"] = df["id"]
+
+        df_final = df_transformed[
+            ["id", "datetime", "amount", "currency", "amount_cur", "description"]
+        ].copy()
+        df_final["datetime"] = _strip_timezone(df_final["datetime"]).dt.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        return df_final
+
+    def transform_json(self, json_input: dict | list) -> pd.DataFrame:
+        records = (
+            json_input.get("transactions", [])
+            if isinstance(json_input, dict)
+            else json_input
+        )
+        records = self._preprocess_records(records)
+        flat_records = [flatten_data(record) for record in records]
+        df_flat = pd.DataFrame.from_records(flat_records)
+        df_normalized = normalise_df_column_names(df_flat)
+        return self.transform(df_normalized)
+
 
 
 def statement_transformers_factory(source):
@@ -704,7 +799,12 @@ def statement_transformers_factory(source):
         "TRD212INV",
     ]:
         return Trading212InvestStatementTransformer()
-    elif source in ["trading212-cash-isa", "Trading212CashIsa", "TRD212CISA"]:
+    elif source in [
+        "trading212-cash-isa",
+        "Trading212CashIsa",
+        "TRD212CISA",
+        "trading212-cash",
+    ]:
         return Trading212CashIsaStatementTransformer()
     elif source in ["trading212", "Trading212", "TRD212"]:
         return Trading212StatementTransformer()

@@ -13,6 +13,7 @@ from mecon.etl.transformers import (
     TrueLayerStatementTransformer,
     flatten_data,
     normalise_df_column_names,
+    source_key_to_abr,
     statement_transformers_factory,
 )
 
@@ -303,6 +304,17 @@ class StatementTransformerFactoryTestCase(unittest.TestCase):
             statement_transformers_factory("trading212-cash-isa"),
             Trading212CashIsaStatementTransformer,
         )
+
+    def test_factory_for_trading212_cash(self):
+        # The DAG writes to `.../trading212-cash/`, so the ETL derives
+        # source_key = "trading212-cash". That key must route here too.
+        self.assertIsInstance(
+            statement_transformers_factory("trading212-cash"),
+            Trading212CashIsaStatementTransformer,
+        )
+
+    def test_source_key_to_abr_accepts_trading212_cash(self):
+        self.assertEqual(source_key_to_abr("trading212-cash"), "TRD212")
 
 
 # Fully synthetic Trading212 invest export fixture. NOT derived from a real
@@ -694,6 +706,131 @@ class Trading212InvestFakeFillTestCase(unittest.TestCase):
         out = self._fake_filled()
         fake = out[out["action"] == "Fake Market Sell"]
         self.assertEqual(list(fake["action_sign"]), [-1, -1])
+
+
+class Trading212CashIsaStatementTransformerTestCase(unittest.TestCase):
+    """Cash ISA transformer against the real export shape (synthetic values).
+
+    Every date, amount, UUID and note below is made up; only the column set and
+    the three observed Action types mirror the real export.
+    """
+
+    SAMPLE = {
+        "source": "trading212-cash",
+        "merged_at": "2024-01-02T03:04:05.111111+00:00",
+        "row_count": 4,
+        "transactions": [
+            {
+                "Action": "Deposit",
+                "Time (UTC)": "2023-02-05 14:42:43+00:00",
+                "Notes": "Transaction ID: 11111111-1111-4111-8111-111111111111",
+                "ID": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
+                "Total": "1000.00",
+                "Currency (Total)": "GBP",
+                "data_fetched": "2024-01-02T03:04:05.111111+00:00",
+            },
+            {
+                "Action": "Deposit",
+                "Time (UTC)": "2023-02-07 19:14:25+00:00",
+                "Notes": "",
+                "ID": "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb",
+                "Total": "2642.74",
+                "Currency (Total)": "GBP",
+                "data_fetched": "2024-01-02T03:04:05.111111+00:00",
+            },
+            {
+                "Action": "Withdrawal",
+                "Time (UTC)": "2023-02-11 16:35:10+00:00",
+                "Notes": "",
+                "ID": "cccccccc-3333-4333-8333-cccccccccccc",
+                "Total": "-3642.74",
+                "Currency (Total)": "GBP",
+                "data_fetched": "2024-01-02T03:04:05.111111+00:00",
+            },
+            {
+                "Action": "Interest on cash",
+                "Time (UTC)": "2023-03-03 01:42:24+00:00",
+                "Notes": "Interest on cash",
+                "ID": "dddddddd-4444-4444-8444-dddddddddddd",
+                "Total": "2.17",
+                "Currency (Total)": "GBP",
+                "data_fetched": "2024-01-02T03:04:05.111111+00:00",
+            },
+        ],
+    }
+
+    def setUp(self):
+        self.df = Trading212CashIsaStatementTransformer().transform_json(self.SAMPLE)
+
+    def _amount_for(self, txid):
+        row = self.df[self.df["id"] == txid]
+        self.assertEqual(len(row), 1, f"expected exactly one row for {txid}")
+        return float(row.iloc[0]["amount"])
+
+    def test_all_rows_survive_the_transform(self):
+        self.assertEqual(len(self.df), 4)
+
+    def test_output_has_expected_columns(self):
+        self.assertEqual(
+            list(self.df.columns),
+            ["id", "datetime", "amount", "currency", "amount_cur", "description"],
+        )
+
+    def test_deposit_stays_positive(self):
+        self.assertEqual(self._amount_for("aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"), 1000.00)
+
+    def test_withdrawal_stays_negative(self):
+        # The export already signs withdrawals; the transformer must not flip it.
+        self.assertEqual(self._amount_for("cccccccc-3333-4333-8333-cccccccccccc"), -3642.74)
+
+    def test_interest_on_cash_stays_positive(self):
+        self.assertEqual(self._amount_for("dddddddd-4444-4444-8444-dddddddddddd"), 2.17)
+
+    def test_amount_and_amount_cur_match(self):
+        self.assertTrue((self.df["amount"] == self.df["amount_cur"]).all())
+
+    def test_ids_are_provider_uuids_verbatim(self):
+        self.assertEqual(
+            sorted(self.df["id"]),
+            sorted(t["ID"] for t in self.SAMPLE["transactions"]),
+        )
+
+    def test_datetime_is_naive_and_has_time_component(self):
+        self.assertTrue(
+            self.df["datetime"]
+            .str.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+            .all()
+        )
+
+    def test_currency_preserved(self):
+        self.assertEqual(set(self.df["currency"]), {"GBP"})
+
+    def test_description_carries_action_and_notes(self):
+        desc = self.df.iloc[0]["description"]
+        self.assertIn("TRD212CISA", desc)
+        self.assertIn("Deposit", desc)
+
+    def test_unknown_action_is_trusted_not_crashed(self):
+        payload = {
+            "transactions": [
+                {
+                    "Action": "Some New Cash Action",
+                    "Time (UTC)": "2023-04-01 10:00:00+00:00",
+                    "Notes": "",
+                    "ID": "eeeeeeee-5555-4555-8555-eeeeeeeeeeee",
+                    "Total": "-12.34",
+                    "Currency (Total)": "GBP",
+                }
+            ]
+        }
+        out = Trading212CashIsaStatementTransformer().transform_json(payload)
+        self.assertEqual(float(out.iloc[0]["amount"]), -12.34)
+
+    def test_invest_transformer_cannot_handle_cash_data(self):
+        # Regression guard: the cash ISA has no positions, so the invest
+        # transformer's fake-fill blows up. This is why a separate class exists.
+        with self.assertRaises(KeyError):
+            Trading212InvestStatementTransformer().transform_json(self.SAMPLE)
 
 
 if __name__ == "__main__":
