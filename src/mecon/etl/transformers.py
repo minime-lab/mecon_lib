@@ -648,12 +648,20 @@ class Trading212InvestStatementTransformer(Trading212StatementTransformer):
             )
         )
 
-        # Use the provider's own transaction id verbatim (globally unique, stable
-        # across re-fetches). Fake rows have no id, so fall back to a stable
-        # synthetic one derived from ticker + time.
+        # Provider transaction id, globally unique and stable across re-fetches.
+        # Fake rows have no id, so fall back to a stable synthetic one derived
+        # from ticker + time.
         df_transformed["id"] = df["id"]
         df_transformed.loc[df_transformed["id"].isna(), "id"] = (
             "FAKE-" + df["ticker"].astype(str) + "-" + df["time"].astype(str)
+        )
+        # Wrap it in the standard mecon id formula (same as every other source)
+        # so the id carries source / datetime / signed amount. The fallback above
+        # runs first, so fake rows contribute a real `i...` component rather than
+        # `inan`.
+        df_transformed["id"] = df_transformed.apply(
+            lambda row: transaction_id_formula(row, self.source_name, txid=row["id"]),
+            axis=1,
         )
 
         df_final = df_transformed[
@@ -760,8 +768,15 @@ class Trading212CashIsaStatementTransformer(Trading212StatementTransformer):
         )
 
         # The provider's own transaction id is a globally unique UUID that is
-        # stable across re-exports; use it verbatim like the invest branch.
+        # stable across re-exports. Wrap it in the standard mecon id formula
+        # (same as every other source) so the id also carries source / datetime
+        # / signed amount. Every cash row has a real UUID, so no fallback is
+        # needed here (unlike the invest branch's Fake Market Sell rows).
         df_transformed["id"] = df["id"]
+        df_transformed["id"] = df_transformed.apply(
+            lambda row: transaction_id_formula(row, self.source_name, txid=row["id"]),
+            axis=1,
+        )
 
         df_final = df_transformed[
             ["id", "datetime", "amount", "currency", "amount_cur", "description"]

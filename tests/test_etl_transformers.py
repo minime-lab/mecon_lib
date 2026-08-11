@@ -484,13 +484,15 @@ class Trading212InvestStatementTransformerJsonTestCase(unittest.TestCase):
         )
 
     def _amount_by_orig_id(self, df, orig_id):
-        """Amount of the transformed row whose id equals the raw export ID.
+        """Amount of the transformed row whose id embeds the raw export ID.
 
-        Excludes the synthetic -FEE companion row (which also embeds the
-        original ID) so the lookup is unambiguous.
+        Ids now carry the standard mecon formula
+        (``TRD212-d<date>t<time>-a<sign><amount>-i<raw id>``), so match on the
+        ``-i`` component. Excludes the synthetic -FEE companion row (which
+        also embeds the original ID) so the lookup is unambiguous.
         """
         rows = df[
-            df["id"].str.fullmatch(re.escape(orig_id)) & ~df["id"].str.endswith("-FEE")
+            df["id"].str.endswith(f"-i{orig_id}") & ~df["id"].str.endswith("-FEE")
         ]
         self.assertEqual(
             len(rows),
@@ -501,8 +503,8 @@ class Trading212InvestStatementTransformerJsonTestCase(unittest.TestCase):
 
     def _fee_amount_by_orig_id(self, df, orig_id):
         """Amount of the synthetic -FEE row for an original transaction ID."""
-        suffix = f"{orig_id}-FEE"
-        rows = df[df["id"].str.fullmatch(re.escape(suffix))]
+        suffix = f"-i{orig_id}-FEE"
+        rows = df[df["id"].str.endswith(suffix)]
         self.assertEqual(
             len(rows), 1, f"expected exactly one fee row ending with {suffix!r}"
         )
@@ -556,7 +558,9 @@ class Trading212InvestStatementTransformerJsonTestCase(unittest.TestCase):
         )
 
         # Fake Market Sell rows: held shares valued at last price per share.
-        fake = df[df["id"].str.startswith("FAKE-")]
+        # The FAKE-<ticker>-<time> placeholder is the `-i` component of the
+        # formula id, so it is embedded rather than leading.
+        fake = df[df["id"].str.contains("-iFAKE-")]
         self.assertEqual(len(fake), 2)
         acme = fake[fake["id"].str.contains("ACME")].iloc[0]
         # 4 held @ 41.37 = 165.48 (positive: it's a synthetic sell).
@@ -763,7 +767,9 @@ class Trading212CashIsaStatementTransformerTestCase(unittest.TestCase):
         self.df = Trading212CashIsaStatementTransformer().transform_json(self.SAMPLE)
 
     def _amount_for(self, txid):
-        row = self.df[self.df["id"] == txid]
+        # Ids carry the standard mecon formula, with the provider UUID as the
+        # trailing `-i` component.
+        row = self.df[self.df["id"].str.endswith(f"-i{txid}")]
         self.assertEqual(len(row), 1, f"expected exactly one row for {txid}")
         return float(row.iloc[0]["amount"])
 
@@ -789,11 +795,29 @@ class Trading212CashIsaStatementTransformerTestCase(unittest.TestCase):
     def test_amount_and_amount_cur_match(self):
         self.assertTrue((self.df["amount"] == self.df["amount_cur"]).all())
 
-    def test_ids_are_provider_uuids_verbatim(self):
-        self.assertEqual(
-            sorted(self.df["id"]),
-            sorted(t["ID"] for t in self.SAMPLE["transactions"]),
-        )
+    def test_ids_follow_the_mecon_formula_and_embed_provider_uuid(self):
+        # e.g. TRD212-d20230205t144243-ap100000-i<uuid>
+        for txn in self.SAMPLE["transactions"]:
+            match = self.df[self.df["id"].str.endswith(f"-i{txn['ID']}")]
+            self.assertEqual(len(match), 1, f"no row for {txn['ID']}")
+            self.assertRegex(
+                match.iloc[0]["id"],
+                r"^TRD212-d\d{8}t\d{6}-a[pn]\d+-i" + re.escape(txn["ID"]) + r"$",
+            )
+
+    def test_id_amount_component_encodes_sign_and_pence(self):
+        # Withdrawal of -3642.74 -> 'an364274'; interest of +2.17 -> 'ap217'.
+        withdrawal = self.df[
+            self.df["id"].str.endswith("-icccccccc-3333-4333-8333-cccccccccccc")
+        ].iloc[0]["id"]
+        self.assertIn("-an364274-", withdrawal)
+        interest = self.df[
+            self.df["id"].str.endswith("-idddddddd-4444-4444-8444-dddddddddddd")
+        ].iloc[0]["id"]
+        self.assertIn("-ap217-", interest)
+
+    def test_ids_are_unique(self):
+        self.assertEqual(len(set(self.df["id"])), len(self.df))
 
     def test_datetime_is_naive_and_has_time_component(self):
         self.assertTrue(
