@@ -15,38 +15,42 @@ class TagGraph:
         self._quick_lookup = {tag.name: tag for tag in self._tags}
         self._dependency_mapping = dependency_mapping
 
-        self._tidy_table = self.tidy_table() # TODO
-
-        # if not self.has_cycles():
-        # if not self.find_all_cycles():
-        #     self.add_hierarchy_levels()
+        self._tidy_table_cache: pd.DataFrame | None = None
 
     @property
     def tags(self):
         return self._tags
 
-    def tidy_table(self, ignore_tags_with_no_dependencies=False):
-        # TODO maybe cache result
-        tags = []
-        for tag, info in self._dependency_mapping.items():
-            info_cpy = info.copy()
-            row_dict = {'tag': tag}
-            depends_on = [dep for dep in info_cpy['depends_on'] if pd.notna(dep) and str(dep).strip() != '']
-            del info_cpy['depends_on']
-            row_dict.update(info_cpy)
-            if len(depends_on) == 0 and not ignore_tags_with_no_dependencies:
-                row_dict['depends_on'] = None
-                tags.append(row_dict)
-            else:
-                for dep_tag in depends_on:
-                    tags.append(dict(**row_dict, depends_on=dep_tag))
+    def tidy_table(self, ignore_tags_with_no_dependencies: bool = False) -> pd.DataFrame:
+        """Materialise the dependency mapping as a (long-format) DataFrame.
 
-        df = pd.DataFrame(tags)
-        return df
+        Cached on first call. ``ignore_tags_with_no_dependencies`` is a pure
+        OUTPUT filter — the cached full table is unchanged either way, so the
+        filter does not invalidate anything.
+        """
+        if self._tidy_table_cache is None:
+            tags = []
+            for tag, info in self._dependency_mapping.items():
+                info_cpy = info.copy()
+                row_dict = {'tag': tag}
+                depends_on = [dep for dep in info_cpy['depends_on'] if pd.notna(dep) and str(dep).strip() != '']
+                del info_cpy['depends_on']
+                row_dict.update(info_cpy)
+                if len(depends_on) == 0:
+                    row_dict['depends_on'] = None
+                    tags.append(row_dict)
+                else:
+                    for dep_tag in depends_on:
+                        tags.append(dict(**row_dict, depends_on=dep_tag))
 
+            self._tidy_table_cache = pd.DataFrame(tags)
+
+        if ignore_tags_with_no_dependencies:
+            return self._tidy_table_cache.dropna(subset=['depends_on']).reset_index(drop=True)
+        return self._tidy_table_cache
 
     @classmethod
-    def from_tags(cls, tags: Iterable[tagging.Tag]):
+    def from_tags(cls, tags: Iterable[tagging.Tag]) -> 'TagGraph':
         dependency_mapping = TagGraph.build_dependency_mapping(tags)
         return cls(tags, dependency_mapping)
 
@@ -147,14 +151,12 @@ class TagGraph:
         new_df['depends_on'] = new_df['depends_on'].apply(
             lambda arr: [dep for dep in arr if pd.notna(dep) and str(dep).strip() != '']
         )
-        # new_dep_mapping = {k: v['depends_on'] for k, v in new_df.set_index('tag').to_dict('index').items()}
         new_dep_mapping = new_df.set_index('tag').to_dict('index')
 
         new_tg = AcyclicTagGraph(self._tags, new_dep_mapping)
         logging.info(f"Removed cycles from the graph. {cycles=}, {edges_to_remove=}, {len(edges)=}, {len(cleaned_edges)=}, {len(new_tg.find_all_cycles())=}")
         logging.info(f"{[edge in cleaned_edges for edge in edges_to_remove]=}")
         return new_tg
-
 
     # def create_plotly_graph(self, k=.5, levels_col=None):
     #     from mecon.data.graphs import create_plotly_graph
@@ -179,34 +181,26 @@ class AcyclicTagGraph(TagGraph):
                 self._tags = new_atg._tags
                 self._dependency_mapping = new_atg._dependency_mapping
                 self._quick_lookup = new_atg._quick_lookup
+                # Invalidate the tidy-table cache: it was populated from the
+                # pre-cleanup mapping inside the has_cycles() call above and
+                # still describes the cyclic graph.
+                self._tidy_table_cache = None
             else:
                 raise ValueError(f"Invalid if_has_cycles value: {if_has_cycles}!")
 
+        # Always have hierarchy levels available; idempotent & cheap when already computed.
+        self.add_hierarchy_levels()
 
-        # self.add_hierarchy_levels()
+    def levels(self) -> dict[str, int]:
+        """Pure dict getter for the per-tag hierarchy level.
+
+        Levels are computed once in ``__init__``, so this never mutates state.
+        """
+        return {tag: info['level'] for tag, info in self._dependency_mapping.items()}
 
     @classmethod
     def from_cyclic_tag_graph(cls, tag_graph: TagGraph) -> 'AcyclicTagGraph':
         return tag_graph.remove_cycles()
-
-    @classmethod
-    def from_tags(cls, tags: Iterable[tagging.Tag]):
-        graph = super().from_tags(tags)
-        return cls.from_cyclic_tag_graph(graph)
-
-    @classmethod
-    def from_tags_dataframe(cls, tags_df: pd.DataFrame) -> 'TagGraph':
-        graph = super().from_tags_dataframe(tags_df)
-        return cls.from_cyclic_tag_graph(graph)
-
-    def levels(self):
-        if len(self.find_all_cycles()) > 0:
-            raise ValueError("Cannot calculate hierarchy on a graph with cycles")
-        if 'level' not in self._dependency_mapping[list(self._dependency_mapping.keys())[0]]:
-            self.add_hierarchy_levels()
-        return {tag: info['level'] for tag, info in self._dependency_mapping.items()}
-
-
 
     def add_hierarchy_levels(self):
         if 'level' in self._dependency_mapping[list(self._dependency_mapping.keys())[0]]:
@@ -241,9 +235,10 @@ class AcyclicTagGraph(TagGraph):
         for tag, info in mapping.items():
             _calc_level_rec(tag)
 
-        # levels_dict = {tag: info['level'] for tag, info in mapping.items()}
         self._dependency_mapping = mapping
-
+        # The mapping gained a 'level' column; any previously cached tidy
+        # table is now stale.
+        self._tidy_table_cache = None
 
     def find_all_root_tags(self) -> Iterable[tagging.Tag]:
         res = [tag for tag in self._tags if tag if len(self.tags_that_depends_on(tag))==0]
@@ -300,5 +295,3 @@ class AcyclicTagGraph(TagGraph):
         all_affected_tags_list = [[affected_root_tag]+self.all_tag_dependencies(affected_root_tag) for affected_root_tag in affected_root_tags]
         res = set(chain(*all_affected_tags_list))
         return res
-
-

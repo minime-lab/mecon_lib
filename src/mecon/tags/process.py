@@ -177,9 +177,8 @@ class RuleExecutionPlanTagging(TaggingSession):
         super().__init__(tags)
 
         tg = AcyclicTagGraph.from_tags(tags)
-        tg.add_hierarchy_levels()
-        if remove_cycles:
-            tg = tg.remove_cycles()
+        if remove_cycles: # redundant
+            tg = tg.remove_cycles() # redundant
 
         if len(tg.find_all_cycles()) > 0:
             # tg = tg.remove_cycles()
