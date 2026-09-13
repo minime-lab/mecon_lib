@@ -105,7 +105,7 @@ class TestRuleGraphs(unittest.TestCase):
             tagging.Tag('test7', rule7),
         ]
         rg = rule_graphs.TagGraph.from_tags(tags)
-        self.assertEquals(rg.find_all_cycles(), [])
+        self.assertEqual(rg.find_all_cycles(), [])
 
         tags = [
             tagging.Tag('test1', rule1),
@@ -119,7 +119,7 @@ class TestRuleGraphs(unittest.TestCase):
 
         rg2 = rule_graphs.TagGraph.from_tags(tags)
         cycles = rg2.find_all_cycles()
-        self.assertEquals(len(cycles), 2)
+        self.assertEqual(len(cycles), 2)
         self.assertSetEqual(set(cycles[0]), {'test1', 'test2', 'test3'})
         self.assertSetEqual(set(cycles[1]), {'test6', 'test7'})
 
@@ -144,10 +144,10 @@ class TestRuleGraphs(unittest.TestCase):
 
         rg = rule_graphs.TagGraph.from_tags(tags)
         cycles = rg.find_all_cycles()
-        self.assertEquals(len(cycles), 2)
+        self.assertEqual(len(cycles), 2)
         arg = rg.remove_cycles()
         cycles = arg.find_all_cycles()
-        self.assertEquals(len(cycles), 0)
+        self.assertEqual(len(cycles), 0)
         expected_df = pd.DataFrame([{'depends_on': 'test3', 'tag': 'test1'}, {'depends_on': 'test1', 'tag': 'test2'},
                                      {'depends_on': 'test3', 'tag': 'test4'}, {'depends_on': 'dep_tag', 'tag': 'test5'},
                                      {'depends_on': 'test7', 'tag': 'test6'}])[['tag', 'depends_on']]
