@@ -185,6 +185,20 @@ class AcyclicTagGraph(TagGraph):
 
         # self.add_hierarchy_levels()
 
+    @classmethod
+    def from_cyclic_tag_graph(cls, tag_graph: TagGraph) -> 'AcyclicTagGraph':
+        return tag_graph.remove_cycles()
+
+    @classmethod
+    def from_tags(cls, tags: Iterable[tagging.Tag]):
+        graph = super().from_tags(tags)
+        return cls.from_cyclic_tag_graph(graph)
+
+    @classmethod
+    def from_tags_dataframe(cls, tags_df: pd.DataFrame) -> 'TagGraph':
+        graph = super().from_tags_dataframe(tags_df)
+        return cls.from_cyclic_tag_graph(graph)
+
     def levels(self):
         if len(self.find_all_cycles()) > 0:
             raise ValueError("Cannot calculate hierarchy on a graph with cycles")
@@ -192,9 +206,7 @@ class AcyclicTagGraph(TagGraph):
             self.add_hierarchy_levels()
         return {tag: info['level'] for tag, info in self._dependency_mapping.items()}
 
-    @classmethod
-    def from_cyclic_tag_graph(cls, tag_graph: TagGraph) -> 'AcyclicTagGraph':
-        return tag_graph.remove_cycles()
+
 
     def add_hierarchy_levels(self):
         if 'level' in self._dependency_mapping[list(self._dependency_mapping.keys())[0]]:
