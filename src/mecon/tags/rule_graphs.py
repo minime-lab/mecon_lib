@@ -50,6 +50,28 @@ class TagGraph:
         dependency_mapping = TagGraph.build_dependency_mapping(tags)
         return cls(tags, dependency_mapping)
 
+    @classmethod
+    def from_tags_dataframe(cls, tags_df: pd.DataFrame) -> 'TagGraph':
+        """Build a TagGraph directly from a tags dataframe.
+
+        Mirrors the way mecon_app's DataManager already materialises tags:
+        the dataframe is expected to carry the tag-rule CSV schema
+        (``name`` + ``conditions_json`` columns), each row is turned into a
+        ``tagging.Tag`` via ``Tag.from_json_string``, and the work is
+        delegated to ``from_tags``. Lets the graph be built from the same
+        dataframe the app already loads, without first collecting Tag objects.
+        """
+        required = {'name', 'conditions_json'}
+        if not required.issubset(tags_df.columns):
+            missing = sorted(required.difference(tags_df.columns))
+            raise ValueError(f"tags dataframe missing required columns: {missing}")
+
+        tags = [
+            tagging.Tag.from_json_string(row['name'], row['conditions_json'])
+            for _, row in tags_df.iterrows()
+        ]
+        return cls.from_tags(tags)
+
     @staticmethod
     def build_dependency_mapping(tags: Iterable[tagging.Tag]) -> dict:
         def _normalise_dep_list(value) -> list[str]:
@@ -215,7 +237,7 @@ class AcyclicTagGraph(TagGraph):
         res = [tag for tag in self._tags if tag if len(self.tags_that_depends_on(tag))==0]
         return res
 
-    def find_all_tag_subgraphs(self) -> Iterable[tagging.Tag]:
+    def find_all_tag_subgraphs(self) -> Iterable[Iterable[tagging.Tag]]:
         subgraphs = {}
         for tag in self.find_all_root_tags():
             dependecies = self.all_tag_dependencies(tag)
