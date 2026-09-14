@@ -295,3 +295,9 @@ class AcyclicTagGraph(TagGraph):
         all_affected_tags_list = [[affected_root_tag]+self.all_tag_dependencies(affected_root_tag) for affected_root_tag in affected_root_tags]
         res = set(chain(*all_affected_tags_list))
         return res
+
+    def get_subgraph_df(self, tag: tagging.Tag | str) -> Iterable[tagging.Tag]:
+        subgraph_tags = self.all_tag_dependencies(tag)
+        subgraph_tag_names = [tag.name for tag in subgraph_tags]
+        subgraph_df = self._tidy_table_cache[self._tidy_table_cache['tag'].isin(subgraph_tag_names) | self._tidy_table_cache['depends_on'].isin(subgraph_tag_names)]
+        return subgraph_df
