@@ -33,6 +33,42 @@ def _build_shared_tags() -> list[tagging.Tag]:
         tagging.Tag('test4', rule10),
     ]
 
+_EXAMPLE_TIDY_TABLE_ACYCLIC = pd.DataFrame([
+    {"tag": "A4", "level": 4, "depends_on": "A3"},
+    {"tag": "A3", "level": 3, "depends_on": "A2"},
+    {"tag": "A2", "level": 2, "depends_on": "A11"},
+    {"tag": "A2", "level": 2, "depends_on": "A12"},
+    {"tag": "A12", "level": 1, "depends_on": "A0"},
+])
+
+def _build_acyclic_tags() -> list[tagging.Tag]:
+    # rule1 = tagging.Condition.from_string_values('tags', 'abs', 'equal', ['dep_tag'])
+    tag_a0 = tagging.Tag('A0', tagging.Conjunction([]))
+    tag_a11 = tagging.Tag('A11', tagging.Conjunction([]))
+
+    rule_a12_a0 = tagging.Condition.from_string_values('tags', 'abs', 'equal', ['a0'])
+    tag_a12 = tagging.Tag('A12', tagging.Conjunction([rule_a12_a0]))
+
+    rule_a2_a11 = tagging.Condition.from_string_values('tags', 'abs', 'equal', ['a11'])
+    rule_a2_a12 = tagging.Condition.from_string_values('tags', 'abs', 'equal', ['a12'])
+    tag_a2 = tagging.Tag('A2', tagging.Conjunction([rule_a2_a11, rule_a2_a12]))
+
+
+    rule_a3_a2 = tagging.Condition.from_string_values('tags', 'abs', 'equal', ['a2'])
+    tag_a3 = tagging.Tag('A3', tagging.Conjunction([rule_a3_a2]))
+
+    rule_a4_a3 = tagging.Condition.from_string_values('tags', 'abs', 'equal', ['a3'])
+    tag_a4 = tagging.Tag('A4', tagging.Conjunction([rule_a4_a3]))
+
+    return [
+        tag_a0,
+        tag_a11,
+        tag_a12,
+        tag_a2,
+        tag_a3,
+        tag_a4
+    ]
+
 
 # Variant fixture for tests that need test3 -> test1 AND test1 -> test2 (so
 # test1 is mid-chain, not a leaf of an unresolved dep_tag). Used by
@@ -219,6 +255,13 @@ class TestRuleGraphs(unittest.TestCase):
                                      {'depends_on': 'test7', 'tag': 'test6', 'level': 1}])[['tag', 'level', 'depends_on']]
         pd.testing.assert_frame_equal(arg.tidy_table(), expected_df)
 
+    def test_select_subgraph_df(self):
+        tags = _build_acyclic_tags()
+        rg = rule_graphs.TagGraph.from_tags(tags)
+
+        # assert rg.select_subgraph_df(['A3']) == tags[] TODO
+
+
 
 class TestAcyclicTagGraph(unittest.TestCase):
     def test_add_hierarchy_levels(self):
@@ -368,6 +411,8 @@ class TestAcyclicTagGraph(unittest.TestCase):
         self.assertSetEqual(arg.all_tags_affected_by(tags[1]), {tags[0], tags[1], tags[2]})
         self.assertSetEqual(arg.all_tags_affected_by(tags[2]), {tags[0], tags[1], tags[2]})
         self.assertSetEqual(arg.all_tags_affected_by(tags[3]), {tags[3]})
+
+
 
 
 if __name__ == '__main__':
