@@ -9,6 +9,16 @@ import pandas as pd
 from mecon.tags import tagging, tag_helpers
 
 
+def _to_tag_names(tags: Iterable[tagging.Tag | str] | tagging.Tag | str) -> list[str] | str:
+    if isinstance(tags, str):
+        return tags
+    if isinstance(tags, tagging.Tag):
+        return tags.name
+
+    tag_names = [tag.name if isinstance(tag, tagging.Tag) else tag for tag in tags]
+    return tag_names
+
+
 class TagGraph:
     def __init__(self, tags: Iterable[tagging.Tag], dependency_mapping: dict):
         self._tags = tags
@@ -20,6 +30,9 @@ class TagGraph:
     @property
     def tags(self):
         return self._tags
+
+    def _as_tag(self, tag: tagging.Tag | str) -> tagging.Tag:
+        return tag if isinstance(tag, tagging.Tag) else self._quick_lookup[tag]
 
     def tidy_table(self, ignore_tags_with_no_dependencies: bool = False) -> pd.DataFrame:
         """Materialise the dependency mapping as a (long-format) DataFrame.
@@ -113,7 +126,7 @@ class TagGraph:
 
         return df_mapping
 
-    def find_all_cycles(self):
+    def create_networkx_graph(self):
         df = self.tidy_table()
         # Create a directed graph
         G = nx.DiGraph()
@@ -124,6 +137,11 @@ class TagGraph:
             depends_on = row['depends_on']
             if pd.notna(depends_on):
                 G.add_edge(depends_on, tag)
+
+        return G
+
+    def find_all_cycles(self):
+        G = self.create_networkx_graph()
 
         # Find all simple cycles
         cycles = list(nx.simple_cycles(G))
@@ -167,10 +185,10 @@ class TagGraph:
 
     def select_subgraph_df(self, tags: list[tagging.Tag | str]) -> pd.DataFrame:
         subgraph_tag_names = [tag.name if isinstance(tag, tagging.Tag) else tag for tag in tags]
-        depended_cond = self._tidy_table_cache['depends_on'].isin(subgraph_tag_names)
-        dependee_cond = self._tidy_table_cache['tag'].isin(subgraph_tag_names)
+        depended_cond = self.tidy_table()['depends_on'].isin(subgraph_tag_names)
+        dependee_cond = self.tidy_table()['tag'].isin(subgraph_tag_names)
         select_condition = dependee_cond | depended_cond
-        subgraph_df = self._tidy_table_cache[select_condition]
+        subgraph_df = self.tidy_table()[select_condition]
         return subgraph_df
 
 class AcyclicTagGraph(TagGraph):
@@ -248,80 +266,111 @@ class AcyclicTagGraph(TagGraph):
         # table is now stale.
         self._tidy_table_cache = None
 
-    def find_all_root_tags(self) -> Iterable[tagging.Tag]:
-        res = [tag for tag in self._tags if tag if len(self.tags_that_depends_on(tag)) == 0]
-        return res
+    def all_tag_dependencies(self, tag: tagging.Tag | str) -> list[tagging.Tag] | None: # TODO add _rec to the name since it's recursive
+        tag_name = _to_tag_names(tag)
 
-    def find_all_tag_subgraphs(self) -> Iterable[Iterable[tagging.Tag]]:
-        subgraphs = {}
-        for tag in self.find_all_root_tags():
-            dependecies = self.all_tag_dependencies(tag)
-            deps_id = f"{tag.name}," + ','.join(sorted([tag.name for tag in dependecies if dependecies is not None]))
-            subgraphs[deps_id] = [tag] + dependecies
-
-        res = sorted(subgraphs.values(), key=len, reverse=True)
-        return res
-
-    def all_tag_dependencies(self, tag: tagging.Tag | str) -> Iterable[tagging.Tag] | None:
-        tag_name = tag.name if isinstance(tag, tagging.Tag) else tag
         if tag_name not in self._dependency_mapping:
             return None
         direct_deps_names = self._dependency_mapping[tag_name]['depends_on']
-        direct_deps = [self._quick_lookup[dep_name] for dep_name in direct_deps_names if dep_name in self._quick_lookup]
+        direct_deps_as_tags = [self._quick_lookup[dep_name] for dep_name in direct_deps_names if dep_name in self._quick_lookup]
 
-        if len(direct_deps) == 0:
+        if len(direct_deps_as_tags) == 0:
             return []
 
-        _rec_results = [self.all_tag_dependencies(dep_tag) for dep_tag in direct_deps]
-        indirect_deps = list(chain(*[deps for deps in _rec_results if deps is not None]))
-        res = direct_deps + indirect_deps
+        _rec_results = [self.all_tag_dependencies(dep_tag) for dep_tag in direct_deps_as_tags]
+        rec_deps_flat = list(chain(*[deps for deps in _rec_results if deps is not None]))
+
+        res = list(set(rec_deps_flat + direct_deps_as_tags))
         return res
 
-    def tags_that_depends_on(self, tag: tagging.Tag | str) -> Iterable[tagging.Tag] | None:
-        tag_name = tag.name if isinstance(tag, tagging.Tag) else tag
-        if tag_name not in self._dependency_mapping:
-            return None
-
-        direct_deps = [self._quick_lookup[curr_tag_name] for curr_tag_name, curr_tag_info in
-                       self._dependency_mapping.items() if tag_name in curr_tag_info['depends_on']]
-        if len(direct_deps) == 0:
-            return []
-
-        _rec_results = [self.tags_that_depends_on(dep_tag) for dep_tag in direct_deps]
-        indirect_deps = list(chain(*[deps for deps in _rec_results if deps is not None]))
-        res = indirect_deps + direct_deps
-        return res
-
-    def all_tags_affected_by(self, tag: tagging.Tag | str) -> Iterable[tagging.Tag]:
-        if isinstance(tag, str):
-            tag = self._quick_lookup[tag]
-        affected_root_tags = self.tags_that_depends_on(tag)
-        if len(affected_root_tags) == 0:
-            return set([tag] + self.all_tag_dependencies(tag))
-
-        all_affected_tags_list = [[affected_root_tag] + self.all_tag_dependencies(affected_root_tag) for
-                                  affected_root_tag in affected_root_tags]
-        res = set(chain(*all_affected_tags_list))
-        return res
-
-    def get_immediate_parent_tags(self, tag: tagging.Tag | str) -> Iterable[tagging.Tag]:
+    def get_immediate_parent_tags(self, tag: tagging.Tag | str) -> list[tagging.Tag]:
+        tag = self._as_tag(tag)
         if isinstance(tag, tagging.Tag):
             tag = tag.name
 
-        parent_tags_str = self._tidy_table_cache[self._tidy_table_cache['depends_on'] == tag]['tag'].unique().tolist()
+        parent_tags_str = self.tidy_table()[self.tidy_table()['depends_on'] == tag]['tag'].unique().tolist()
         parent_tags = set([self._quick_lookup[tag] for tag in parent_tags_str])
         return parent_tags
 
-    def get_all_parent_tags_rec(self, tag: tagging.Tag | str) -> Iterable[tagging.Tag]:
+    def all_parent_tags_rec(self, tag: tagging.Tag | str) -> list[tagging.Tag]:
+        tag = self._as_tag(tag)
         immediate_parent_tags = self.get_immediate_parent_tags(tag)
         all_parent_tags = set(immediate_parent_tags)
         for p_tag in immediate_parent_tags:
-            imm_parents = self.get_all_parent_tags_rec(p_tag)
+            imm_parents = self.all_parent_tags_rec(p_tag)
             if len(imm_parents) == 0:
                 continue
             all_parent_tags = all_parent_tags.union(imm_parents)
 
-        return all_parent_tags
+        return list(all_parent_tags)
+
+    def all_tags_affected_by(self, tag: tagging.Tag | str) -> list[tagging.Tag]:
+        tag = self._as_tag(tag)
+        res = self.all_parent_tags_rec(tag) + [tag] + self.all_tag_dependencies(tag)
+        return res
+
+    def subgraph_containing_tag(self, tag: tagging.Tag | str) -> list[tagging.Tag]:
+        tag = self._as_tag(tag)
+        to_be_checked = set(self.all_tags_affected_by(tag))
+        have_been_checked = set()
+        while len(to_be_checked) > 0:
+            target_tag = to_be_checked.pop()
+            affected_tags = set(self.all_tags_affected_by(target_tag))
+            have_been_checked = have_been_checked.union({target_tag})
+            to_be_checked = to_be_checked.union(affected_tags.difference(have_been_checked))
+
+        return list(have_been_checked)
+
+    def find_all_root_tags(self) -> list[tagging.Tag]:
+        root_tags = []
+        for tag in self._tags:
+            parent_tags = self.get_immediate_parent_tags(tag)
+            if len(parent_tags) > 0:
+                continue
+            root_tags.append(tag)
+        return root_tags
+
+
+    def find_all_tag_subgraphs(self) -> list[list[tagging.Tag]]:
+        G = self.create_networkx_graph()
+        UG = G.to_undirected()
+
+        subgraphs = list(UG.subgraph(c).copy() for c in nx.connected_components(UG))
+        subgraph_lists = [list(sg.nodes) for sg in subgraphs]
+        # subgraph_lists = [list([self._as_tag(n) for n in sg.nodes]) for sg in subgraphs]
+        pass
+
+
+        # from itertools import product
+        #
+        # all_roots = self.find_all_root_tags()
+        # all_subgraphs = [set(self.subgraph_containing_tag(tag)) for tag in all_roots]
+        #
+        # checked_tags = set()
+        # for root, subgraph in product(all_roots, all_subgraphs):
+
+
+
+
+    # def tags_that_depends_on(self, tag: tagging.Tag | str) -> Iterable[tagging.Tag] | None: # TODO fix typo in name: make it tags_that_depend_on
+    #     tag_name = tag.name if isinstance(tag, tagging.Tag) else tag
+    #     if tag_name not in self._dependency_mapping:
+    #         return None
+    #
+    #     direct_deps = [self._quick_lookup[curr_tag_name] for curr_tag_name, curr_tag_info in
+    #                    self._dependency_mapping.items() if tag_name in curr_tag_info['depends_on']]
+    #     if len(direct_deps) == 0:
+    #         return []
+    #
+    #     _rec_results = [self.tags_that_depends_on(dep_tag) for dep_tag in direct_deps]
+    #     indirect_deps = list(chain(*[deps for deps in _rec_results if deps is not None]))
+    #     res = indirect_deps + direct_deps
+    #     return res
+
+
+
+
+
 
     def get_subgraph_df(self, tag: tagging.Tag | str) -> pd.DataFrame:
         subgraph_tags = self.all_tag_dependencies(tag)
@@ -330,3 +379,4 @@ class AcyclicTagGraph(TagGraph):
             self._tidy_table_cache['tag'].isin(subgraph_tag_names) | self._tidy_table_cache['depends_on'].isin(
                 subgraph_tag_names)]
         return subgraph_df
+
