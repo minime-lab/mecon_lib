@@ -331,45 +331,14 @@ class AcyclicTagGraph(TagGraph):
         return root_tags
 
 
-    def find_all_tag_subgraphs(self) -> list[list[tagging.Tag]]:
-        G = self.create_networkx_graph()
-        UG = G.to_undirected()
-
-        subgraphs = list(UG.subgraph(c).copy() for c in nx.connected_components(UG))
-        subgraph_lists = [list(sg.nodes) for sg in subgraphs]
-        # subgraph_lists = [list([self._as_tag(n) for n in sg.nodes]) for sg in subgraphs]
-        pass
-
-
-        # from itertools import product
-        #
-        # all_roots = self.find_all_root_tags()
-        # all_subgraphs = [set(self.subgraph_containing_tag(tag)) for tag in all_roots]
-        #
-        # checked_tags = set()
-        # for root, subgraph in product(all_roots, all_subgraphs):
-
-
-
-
-    # def tags_that_depends_on(self, tag: tagging.Tag | str) -> Iterable[tagging.Tag] | None: # TODO fix typo in name: make it tags_that_depend_on
-    #     tag_name = tag.name if isinstance(tag, tagging.Tag) else tag
-    #     if tag_name not in self._dependency_mapping:
-    #         return None
+    # def find_all_tag_subgraphs(self) -> list[list[tagging.Tag]]:
+    #     G = self.create_networkx_graph()
+    #     UG = G.to_undirected()
     #
-    #     direct_deps = [self._quick_lookup[curr_tag_name] for curr_tag_name, curr_tag_info in
-    #                    self._dependency_mapping.items() if tag_name in curr_tag_info['depends_on']]
-    #     if len(direct_deps) == 0:
-    #         return []
-    #
-    #     _rec_results = [self.tags_that_depends_on(dep_tag) for dep_tag in direct_deps]
-    #     indirect_deps = list(chain(*[deps for deps in _rec_results if deps is not None]))
-    #     res = indirect_deps + direct_deps
-    #     return res
-
-
-
-
+    #     subgraphs = list(UG.subgraph(c).copy() for c in nx.connected_components(UG))
+    #     subgraph_lists = [list(sg.nodes) for sg in subgraphs]
+    #     # subgraph_lists = [list([self._as_tag(n) for n in sg.nodes]) for sg in subgraphs]
+    #     pass
 
 
     def get_subgraph_df(self, tag: tagging.Tag | str) -> pd.DataFrame:
