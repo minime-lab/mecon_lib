@@ -290,7 +290,7 @@ class AcyclicTagGraph(TagGraph):
 
         parent_tags_str = self.tidy_table()[self.tidy_table()['depends_on'] == tag]['tag'].unique().tolist()
         parent_tags = set([self._quick_lookup[tag] for tag in parent_tags_str])
-        return parent_tags
+        return list(parent_tags)
 
     def all_parent_tags_rec(self, tag: tagging.Tag | str) -> list[tagging.Tag]:
         tag = self._as_tag(tag)
@@ -341,11 +341,11 @@ class AcyclicTagGraph(TagGraph):
     #     pass
 
 
-    def get_subgraph_df(self, tag: tagging.Tag | str) -> pd.DataFrame:
-        subgraph_tags = self.all_tag_dependencies(tag)
-        subgraph_tag_names = [tag.name for tag in subgraph_tags]
-        subgraph_df = self._tidy_table_cache[
-            self._tidy_table_cache['tag'].isin(subgraph_tag_names) | self._tidy_table_cache['depends_on'].isin(
-                subgraph_tag_names)]
-        return subgraph_df
+    # def get_subgraph_df(self, tag: tagging.Tag | str) -> pd.DataFrame:
+    #     subgraph_tags = self.all_tag_dependencies(tag)
+    #     subgraph_tag_names = [tag.name for tag in subgraph_tags]
+    #     subgraph_df = self._tidy_table_cache[
+    #         self._tidy_table_cache['tag'].isin(subgraph_tag_names) | self._tidy_table_cache['depends_on'].isin(
+    #             subgraph_tag_names)]
+    #     return subgraph_df
 
