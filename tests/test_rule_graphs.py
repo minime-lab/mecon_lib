@@ -69,6 +69,11 @@ def _build_acyclic_tags() -> list[tagging.Tag]:
     return [tag_a0, tag_a11, tag_a12, tag_a2, tag_a3, tag_a4]
 
 
+def _build_graph_from_dataset_snapshot_20260927():
+    from .helper_for_test_rule_graphs import all_tags_df
+    t = rule_graphs.AcyclicTagGraph.from_tags_dataframe(all_tags_df)
+    return t
+
 # Variant fixture for tests that need test3 -> test1 AND test1 -> test2 (so
 # test1 is mid-chain, not a leaf of an unresolved dep_tag). Used by
 # tags_that_depends_on / find_all_root_tags / find_all_tag_subgraphs /
@@ -598,6 +603,129 @@ class TestAcyclicTagGraph(unittest.TestCase):
         # TODO upstream: handle the unknown-tag case so callers don't have to.
         with self.assertRaises(TypeError):
             arg.get_subgraph_df("nonexistent")
+
+class TestAcyclicTagGraphWithDataset(unittest.TestCase):
+    def setUp(self) -> None:
+        self.graph = _build_graph_from_dataset_snapshot_20260927()
+
+    def test_all_tag_dependencies_with_dataset(self):
+        expected_tags_for_tfl = {'BorisBike'}
+        result_tags_for_tfl = set(rule_graphs._to_tag_names(self.graph.all_tag_dependencies("TFL")))
+        assert(result_tags_for_tfl == expected_tags_for_tfl)
+
+        expected_tags_for_commute = {'Uber Taxi', 'LimeBike', 'TFL', 'BorisBike'}
+        result_tags_for_commute = set(rule_graphs._to_tag_names(self.graph.all_tag_dependencies("Commute")))
+        assert (result_tags_for_commute == expected_tags_for_commute)
+
+        expected_tags_for_food = {'Eating out', 'Super Market', 'Food delivery', 'Too good to go'}
+        result_tags_for_food = set(rule_graphs._to_tag_names(self.graph.all_tag_dependencies("Food")))
+        assert (result_tags_for_food == expected_tags_for_food)
+
+        expected_tags_for_homebills = set()
+        result_tags_for_homebills = set(rule_graphs._to_tag_names(self.graph.all_tag_dependencies("Home Bills")))
+        assert (result_tags_for_homebills == expected_tags_for_homebills)
+
+        expected_tags_for_rent = set()
+        result_tags_for_rent = set(rule_graphs._to_tag_names(self.graph.all_tag_dependencies("Rent")))
+        assert (result_tags_for_rent == expected_tags_for_rent)
+
+        expected_tags_essentials = {'BorisBike', 'Commute', 'Eating out', 'Food', 'Food delivery', 'Home Bills', 'LimeBike', 'Rent', 'Super Market', 'TFL', 'Too good to go', 'Uber Taxi'}
+        result_tags_essentials = set(rule_graphs._to_tag_names(self.graph.all_tag_dependencies("Essentials")))
+        assert(result_tags_essentials == expected_tags_essentials)
+
+    def test_get_immediate_parent_tags_with_dataset(self):
+        expected_tags_for_borisbike = {'Commute', 'TFL'}
+        result_tags_for_borisbike = set(rule_graphs._to_tag_names(self.graph.get_immediate_parent_tags("BorisBike")))
+        assert (result_tags_for_borisbike == expected_tags_for_borisbike)
+
+        expected_tags_for_tfl = {'Commute'}
+        result_tags_for_tfl = set(rule_graphs._to_tag_names(self.graph.get_immediate_parent_tags("TFL")))
+        assert (result_tags_for_tfl == expected_tags_for_tfl)
+
+        expected_tags_for_rent = {'Essentials', 'Holiday Accommodation', 'Transfers', 'Living costs'}
+        result_tags_for_rent = set(rule_graphs._to_tag_names(self.graph.get_immediate_parent_tags("Rent")))
+        assert (result_tags_for_rent == expected_tags_for_rent)
+
+        expected_tags_for_essentials = set()
+        result_tags_for_essentials = set(rule_graphs._to_tag_names(self.graph.get_immediate_parent_tags("ReEssentialsnt")))
+        assert (result_tags_for_essentials == expected_tags_for_essentials)
+
+    def test_all_parent_tags_rec_with_dataset(self):
+        expected_tags_for_borisbike = {'Essentials', 'Commute', 'TFL'}
+        result_tags_for_borisbike = set(rule_graphs._to_tag_names(self.graph.all_parent_tags_rec("BorisBike")))
+        assert (result_tags_for_borisbike == expected_tags_for_borisbike)
+
+        expected_tags_for_tfl = {'Essentials', 'Commute'}
+        result_tags_for_tfl = set(rule_graphs._to_tag_names(self.graph.all_parent_tags_rec("TFL")))
+        assert (result_tags_for_tfl == expected_tags_for_tfl)
+
+        expected_tags_for_rent = {'Essentials', 'Holiday Accommodation', 'Transfers', 'Living costs'}
+        result_tags_for_rent = set(rule_graphs._to_tag_names(self.graph.all_parent_tags_rec("Rent")))
+        assert (result_tags_for_rent == expected_tags_for_rent)
+
+        expected_tags_for_essentials = set()
+        result_tags_for_essentials = set(rule_graphs._to_tag_names(self.graph.all_parent_tags_rec("ReEssentialsnt")))
+        assert (result_tags_for_essentials == expected_tags_for_essentials)
+
+    def test_all_tags_affected_by_with_dataset(self):
+        expected_tags_for_borisbike = {'Essentials', 'Commute', 'TFL', "BorisBike"}
+        result_tags_for_borisbike = set(rule_graphs._to_tag_names(self.graph.all_tags_affected_by("BorisBike")))
+        assert (result_tags_for_borisbike == expected_tags_for_borisbike)
+
+        expected_tags_for_tfl = {'Essentials', 'Commute', 'BorisBike', 'TFL'}
+        result_tags_for_tfl = set(rule_graphs._to_tag_names(self.graph.all_tags_affected_by("TFL")))
+        assert (result_tags_for_tfl == expected_tags_for_tfl)
+
+        expected_tags_for_rent = {'Essentials', 'Rent', 'Living costs', 'Holiday Accommodation', 'Transfers'}
+        result_tags_for_rent = set(rule_graphs._to_tag_names(self.graph.all_tags_affected_by("Rent")))
+        assert (result_tags_for_rent == expected_tags_for_rent)
+
+        expected_tags_for_essentials = {'Essentials', 'Commute', 'LimeBike', 'BorisBike', 'Rent', 'TFL', 'Too good to go', 'Food', 'Uber Taxi', 'Home Bills', 'Eating out', 'Food delivery', 'Super Market'}
+        result_tags_for_essentials = set(rule_graphs._to_tag_names(self.graph.all_tags_affected_by('Essentials')))
+        assert (result_tags_for_essentials == expected_tags_for_essentials)
+
+
+    def test_subgraph_containing_tag(self):
+        sugraph_tags = {'Essentials', 'Commute', 'LimeBike', 'BorisBike', 'Rent', 'TFL',
+                                        'Too good to go', 'Food', 'Uber Taxi', 'Home Bills', 'Eating out',
+                                        'Food delivery', 'Super Market', 'Living costs', 'Holiday Accommodation',
+                                        'Transfers', 'Airbnb', 'Alpha Bank', 'Currency exchange', 'Friends transfers',
+                                       'My transfers', }
+
+        expected_tags_for_borisbike = sugraph_tags
+        result_tags_for_borisbike = set(rule_graphs._to_tag_names(self.graph.subgraph_containing_tag("BorisBike")))
+        assert (result_tags_for_borisbike == expected_tags_for_borisbike)
+
+        expected_tags_for_tfl = sugraph_tags
+        result_tags_for_tfl = set(rule_graphs._to_tag_names(self.graph.subgraph_containing_tag("TFL")))
+        assert (result_tags_for_tfl == expected_tags_for_tfl)
+
+        expected_tags_for_rent = sugraph_tags
+        result_tags_for_rent = set(rule_graphs._to_tag_names(self.graph.subgraph_containing_tag("Rent")))
+        assert (result_tags_for_rent == expected_tags_for_rent)
+
+        expected_tags_for_essentials = sugraph_tags
+        result_tags_for_essentials = set(rule_graphs._to_tag_names(self.graph.subgraph_containing_tag('Essentials')))
+        assert (result_tags_for_essentials == expected_tags_for_essentials)
+
+    def test_find_all_root_tags(self):
+        essentials_subgraph_tags = self.graph.subgraph_containing_tag("Essentials")
+        essentials_subgraph = rule_graphs.AcyclicTagGraph.from_tags(essentials_subgraph_tags)
+        subgraph_root_tags = set(rule_graphs._to_tag_names(essentials_subgraph.find_all_root_tags()))
+        expected_sugraph_root_tags = {'Essentials', 'Living costs', 'Holiday Accommodation', 'Transfers'}
+        assert subgraph_root_tags == expected_sugraph_root_tags
+
+
+    # def test_find_all_tag_subgraphs(self):
+    #     TODO needs fixing, some tags are not parsed (HSBC, MONZO, Revo) and the essentials_subgraph_tags has 21 tags while the subgraph created by find_all_tag_subgraphs has 24, probably an issue with building the dependency mapping
+    #     essentials_subgraph_tags = self.graph.subgraph_containing_tag("Essentials")
+    #     essentials_subgraph = rule_graphs.AcyclicTagGraph.from_tags(essentials_subgraph_tags)
+    #     subgraph_root_tags = set(rule_graphs._to_tag_names(essentials_subgraph.find_all_tag_subgraphs()))
+    #     expected_sugraph_root_tags = {'Essentials', 'Living costs', 'Holiday Accommodation', 'Transfers'}
+    #     assert subgraph_root_tags == expected_sugraph_root_tags
+
+
+
 
 
 if __name__ == "__main__":
